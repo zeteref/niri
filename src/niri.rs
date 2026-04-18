@@ -390,7 +390,7 @@ pub struct Niri {
 
     pub window_mru_ui: WindowMruUi,
     pub pending_mru_commit: Option<PendingMruCommit>,
-    pub pending_focus_follow_mouse: Option<PendingFfmCommit>,
+    pub pending_focus_follow_mouse: Option<PendingFocusFollowsMouseCommit>,
 
     pub pick_window: Option<async_channel::Sender<Option<MappedId>>>,
     pub pick_color: Option<async_channel::Sender<Option<niri_ipc::PickedColor>>>,
@@ -632,7 +632,7 @@ pub struct PendingMruCommit {
 
 /// Pending focus-follows-mouse window activation.
 #[derive(Debug)]
-pub struct PendingFfmCommit {
+pub struct PendingFocusFollowsMouseCommit {
     window: Window,
     token: RegistrationToken,
 }
@@ -6211,7 +6211,7 @@ impl Niri {
                 }
             }
             None => {
-                if let Some(PendingFfmCommit { token, .. }) = self.pending_focus_follow_mouse.take()
+                if let Some(PendingFocusFollowsMouseCommit { token, .. }) = self.pending_focus_follow_mouse.take()
                 {
                     self.event_loop.remove(token);
                 }
@@ -6249,8 +6249,8 @@ impl Niri {
                     )
                     .unwrap();
 
-                if let Some(PendingFfmCommit { token, .. }) =
-                    self.pending_focus_follow_mouse.replace(PendingFfmCommit {
+                if let Some(PendingFocusFollowsMouseCommit { token, .. }) =
+                    self.pending_focus_follow_mouse.replace(PendingFocusFollowsMouseCommit {
                         window: window.clone(),
                         token: focus_token,
                     })
