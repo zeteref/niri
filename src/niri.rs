@@ -390,6 +390,7 @@ pub struct Niri {
 
     pub window_mru_ui: WindowMruUi,
     pub pending_mru_commit: Option<PendingMruCommit>,
+    pub pending_ffm_commit: Option<PendingFfmCommit>,
 
     pub pick_window: Option<async_channel::Sender<Option<MappedId>>>,
     pub pick_color: Option<async_channel::Sender<Option<niri_ipc::PickedColor>>>,
@@ -627,6 +628,13 @@ pub struct PendingMruCommit {
     id: MappedId,
     token: RegistrationToken,
     stamp: Duration,
+}
+
+/// Pending focus-follows-mouse window activation.
+#[derive(Debug)]
+pub struct PendingFfmCommit {
+    window: Window,
+    token: RegistrationToken,
 }
 
 impl RedrawState {
@@ -2593,6 +2601,7 @@ impl Niri {
 
             window_mru_ui,
             pending_mru_commit: None,
+            pending_ffm_commit: None,
 
             pick_window: None,
             pick_color: None,
@@ -6196,8 +6205,48 @@ impl Niri {
                     }
                 }
 
-                self.layout.activate_window_without_raising(window);
-                self.layer_shell_on_demand_focus = None;
+                match ffm.delay_ms {
+                    None | Some(0) => {
+                        self.layout.activate_window_without_raising(window);
+                        self.layer_shell_on_demand_focus = None;
+                    }
+                    Some(ms) => {
+                        let window_clone = window.clone();
+                        let focus_token = self
+                            .event_loop
+                            .insert_source(
+                                Timer::from_duration(Duration::from_millis(u64::from(ms))),
+                                move |_, _, state| {
+                                    if let Some(pending) = state.niri.pending_ffm_commit.take() {
+                                        if pending.window == window_clone {
+                                            state
+                                                .niri
+                                                .layout
+                                                .activate_window_without_raising(&pending.window);
+                                            state.niri.layer_shell_on_demand_focus = None;
+                                        }
+                                    }
+                                    TimeoutAction::Drop
+                                },
+                            )
+                            .unwrap();
+
+                        if let Some(PendingFfmCommit { token, .. }) =
+                            self.pending_ffm_commit.replace(PendingFfmCommit {
+                                window: window.clone(),
+                                token: focus_token,
+                            })
+                        {
+                            self.event_loop.remove(token);
+                        }
+                    }
+                }
+            }
+        } else {
+            if self.pending_ffm_commit.is_some() {
+                if let Some(PendingFfmCommit { token, .. }) = self.pending_ffm_commit.take() {
+                    self.event_loop.remove(token);
+                }
             }
         }
 
