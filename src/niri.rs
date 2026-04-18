@@ -6181,40 +6181,45 @@ impl Niri {
             }
         }
 
-        match &new_focus.window {
-            Some(window) => {
-                if !self.layout.is_overview_open() && current_focus.window.as_ref() != Some(window)
-                {
-                    let (window, hit) = window;
+        if let Some(window) = &new_focus.window {
+            if !self.layout.is_overview_open() && current_focus.window.as_ref() != Some(window) {
+                let (window, hit) = window;
 
-                    // Don't trigger focus-follows-mouse over the tab indicator.
-                    if matches!(
-                        hit,
-                        HitType::Activate {
-                            is_tab_indicator: true
-                        }
-                    ) {
+                // Don't trigger focus-follows-mouse over the tab indicator.
+                if matches!(
+                    hit,
+                    HitType::Activate {
+                        is_tab_indicator: true
+                    }
+                ) {
+                    return;
+                }
+
+                if !self.layout.should_trigger_focus_follows_mouse_on(window) {
+                    return;
+                }
+
+                if let Some(threshold) = ffm.max_scroll_amount {
+                    if self.layout.scroll_amount_to_activate(window) > threshold.0 {
                         return;
                     }
+                }
 
-                    if !self.layout.should_trigger_focus_follows_mouse_on(window) {
-                        return;
+                match ffm.delay_ms {
+                    None | Some(0) => {
+                        self.layout.activate_window_without_raising(window);
+                        self.layer_shell_on_demand_focus = None;
                     }
-
-                    if let Some(threshold) = ffm.max_scroll_amount {
-                        if self.layout.scroll_amount_to_activate(window) > threshold.0 {
-                            return;
-                        }
+                    Some(delay_ms) => {
+                        self.activate_window_without_raising_delayed(window, delay_ms);
                     }
-
-                    self.activate_window_maybe_delayed(window, ffm.delay_ms);
                 }
             }
-            None => {
-                if let Some(PendingFocusFollowsMouseCommit { token, .. }) = self.pending_focus_follow_mouse.take()
-                {
-                    self.event_loop.remove(token);
-                }
+        } else {
+            if let Some(PendingFocusFollowsMouseCommit { token, .. }) =
+                self.pending_focus_follow_mouse.take()
+            {
+                self.event_loop.remove(token);
             }
         }
 
@@ -6225,39 +6230,35 @@ impl Niri {
         }
     }
 
-    fn activate_window_maybe_delayed(&mut self, window: &Window, delay_ms: Option<u16>) {
-        match delay_ms {
-            None | Some(0) => {
-                self.layout.activate_window_without_raising(window);
-                self.layer_shell_on_demand_focus = None;
-            }
-            Some(ms) => {
-                let focused_window = window.clone();
-                let focus_token = self
-                    .event_loop
-                    .insert_source(
-                        Timer::from_duration(Duration::from_millis(u64::from(ms))),
-                        move |_, _, state| {
-                            if let Some(pending) = state.niri.pending_focus_follow_mouse.take() {
-                                if pending.window == focused_window {
-                                    state.niri.layout.activate_window_without_raising(&pending.window);
-                                    state.niri.layer_shell_on_demand_focus = None;
-                                }
-                            }
-                            TimeoutAction::Drop
-                        },
-                    )
-                    .unwrap();
+    fn activate_window_without_raising_delayed(&mut self, window: &Window, delay_ms: u16) {
+        let focused_window = window.clone();
+        let focus_token = self
+            .event_loop
+            .insert_source(
+                Timer::from_duration(Duration::from_millis(u64::from(delay_ms))),
+                move |_, _, state| {
+                    if let Some(pending) = state.niri.pending_focus_follow_mouse.take() {
+                        if pending.window == focused_window {
+                            state
+                                .niri
+                                .layout
+                                .activate_window_without_raising(&pending.window);
+                            state.niri.layer_shell_on_demand_focus = None;
+                        }
+                    }
+                    TimeoutAction::Drop
+                },
+            )
+            .unwrap();
 
-                if let Some(PendingFocusFollowsMouseCommit { token, .. }) =
-                    self.pending_focus_follow_mouse.replace(PendingFocusFollowsMouseCommit {
-                        window: window.clone(),
-                        token: focus_token,
-                    })
-                {
-                    self.event_loop.remove(token);
-                }
-            }
+        if let Some(PendingFocusFollowsMouseCommit { token, .. }) = self
+            .pending_focus_follow_mouse
+            .replace(PendingFocusFollowsMouseCommit {
+                window: window.clone(),
+                token: focus_token,
+            })
+        {
+            self.event_loop.remove(token);
         }
     }
 
