@@ -390,6 +390,7 @@ pub struct Niri {
 
     pub window_mru_ui: WindowMruUi,
     pub pending_mru_commit: Option<PendingMruCommit>,
+    pub pending_focus_follow_mouse: Option<PendingFocusFollowsMouseCommit>,
 
     pub pick_window: Option<async_channel::Sender<Option<MappedId>>>,
     pub pick_color: Option<async_channel::Sender<Option<niri_ipc::PickedColor>>>,
@@ -627,6 +628,13 @@ pub struct PendingMruCommit {
     id: MappedId,
     token: RegistrationToken,
     stamp: Duration,
+}
+
+/// Pending focus-follows-mouse window activation.
+#[derive(Debug)]
+pub struct PendingFocusFollowsMouseCommit {
+    window: Window,
+    token: RegistrationToken,
 }
 
 impl RedrawState {
@@ -2593,6 +2601,7 @@ impl Niri {
 
             window_mru_ui,
             pending_mru_commit: None,
+            pending_focus_follow_mouse: None,
 
             pick_window: None,
             pick_color: None,
@@ -6172,38 +6181,82 @@ impl Niri {
             }
         }
 
-        if let Some(window) = &new_focus.window {
-            if !self.layout.is_overview_open() && current_focus.window.as_ref() != Some(window) {
-                let (window, hit) = window;
+        match &new_focus.window {
+            Some(window) => {
+                if !self.layout.is_overview_open() && current_focus.window.as_ref() != Some(window)
+                {
+                    let (window, hit) = window;
 
-                // Don't trigger focus-follows-mouse over the tab indicator.
-                if matches!(
-                    hit,
-                    HitType::Activate {
-                        is_tab_indicator: true
-                    }
-                ) {
-                    return;
-                }
-
-                if !self.layout.should_trigger_focus_follows_mouse_on(window) {
-                    return;
-                }
-
-                if let Some(threshold) = ffm.max_scroll_amount {
-                    if self.layout.scroll_amount_to_activate(window) > threshold.0 {
+                    // Don't trigger focus-follows-mouse over the tab indicator.
+                    if matches!(
+                        hit,
+                        HitType::Activate {
+                            is_tab_indicator: true
+                        }
+                    ) {
                         return;
                     }
-                }
 
-                self.layout.activate_window_without_raising(window);
-                self.layer_shell_on_demand_focus = None;
+                    if !self.layout.should_trigger_focus_follows_mouse_on(window) {
+                        return;
+                    }
+
+                    if let Some(threshold) = ffm.max_scroll_amount {
+                        if self.layout.scroll_amount_to_activate(window) > threshold.0 {
+                            return;
+                        }
+                    }
+
+                    self.activate_window_maybe_delayed(window, ffm.delay_ms);
+                }
+            }
+            None => {
+                if let Some(PendingFocusFollowsMouseCommit { token, .. }) = self.pending_focus_follow_mouse.take()
+                {
+                    self.event_loop.remove(token);
+                }
             }
         }
 
         if let Some(layer) = &new_focus.layer {
             if current_focus.layer.as_ref() != Some(layer) {
                 self.layer_shell_on_demand_focus = Some(layer.clone());
+            }
+        }
+    }
+
+    fn activate_window_maybe_delayed(&mut self, window: &Window, delay_ms: Option<u16>) {
+        match delay_ms {
+            None | Some(0) => {
+                self.layout.activate_window_without_raising(window);
+                self.layer_shell_on_demand_focus = None;
+            }
+            Some(ms) => {
+                let focused_window = window.clone();
+                let focus_token = self
+                    .event_loop
+                    .insert_source(
+                        Timer::from_duration(Duration::from_millis(u64::from(ms))),
+                        move |_, _, state| {
+                            if let Some(pending) = state.niri.pending_focus_follow_mouse.take() {
+                                if pending.window == focused_window {
+                                    state.niri.layout.activate_window_without_raising(&pending.window);
+                                    state.niri.layer_shell_on_demand_focus = None;
+                                }
+                            }
+                            TimeoutAction::Drop
+                        },
+                    )
+                    .unwrap();
+
+                if let Some(PendingFocusFollowsMouseCommit { token, .. }) =
+                    self.pending_focus_follow_mouse.replace(PendingFocusFollowsMouseCommit {
+                        window: window.clone(),
+                        token: focus_token,
+                    })
+                {
+                    self.event_loop.remove(token);
+                }
             }
         }
     }
