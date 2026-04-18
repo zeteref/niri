@@ -6207,43 +6207,7 @@ impl Niri {
                         }
                     }
 
-                    match ffm.delay_ms {
-                        None | Some(0) => {
-                            self.layout.activate_window_without_raising(window);
-                            self.layer_shell_on_demand_focus = None;
-                        }
-                        Some(ms) => {
-                            let focused_window = window.clone();
-                            let focus_token = self
-                                .event_loop
-                                .insert_source(
-                                    Timer::from_duration(Duration::from_millis(u64::from(ms))),
-                                    move |_, _, state| {
-                                        if let Some(pending) =
-                                            state.niri.pending_focus_follow_mouse.take()
-                                        {
-                                            if pending.window == focused_window {
-                                                state.niri.layout.activate_window_without_raising(
-                                                    &pending.window,
-                                                );
-                                                state.niri.layer_shell_on_demand_focus = None;
-                                            }
-                                        }
-                                        TimeoutAction::Drop
-                                    },
-                                )
-                                .unwrap();
-
-                            if let Some(PendingFfmCommit { token, .. }) =
-                                self.pending_focus_follow_mouse.replace(PendingFfmCommit {
-                                    window: window.clone(),
-                                    token: focus_token,
-                                })
-                            {
-                                self.event_loop.remove(token);
-                            }
-                        }
-                    }
+                    self.activate_window_maybe_delayed(window, ffm.delay_ms);
                 }
             }
             None => {
@@ -6257,6 +6221,42 @@ impl Niri {
         if let Some(layer) = &new_focus.layer {
             if current_focus.layer.as_ref() != Some(layer) {
                 self.layer_shell_on_demand_focus = Some(layer.clone());
+            }
+        }
+    }
+
+    fn activate_window_maybe_delayed(&mut self, window: &Window, delay_ms: Option<u16>) {
+        match delay_ms {
+            None | Some(0) => {
+                self.layout.activate_window_without_raising(window);
+                self.layer_shell_on_demand_focus = None;
+            }
+            Some(ms) => {
+                let focused_window = window.clone();
+                let focus_token = self
+                    .event_loop
+                    .insert_source(
+                        Timer::from_duration(Duration::from_millis(u64::from(ms))),
+                        move |_, _, state| {
+                            if let Some(pending) = state.niri.pending_focus_follow_mouse.take() {
+                                if pending.window == focused_window {
+                                    state.niri.layout.activate_window_without_raising(&pending.window);
+                                    state.niri.layer_shell_on_demand_focus = None;
+                                }
+                            }
+                            TimeoutAction::Drop
+                        },
+                    )
+                    .unwrap();
+
+                if let Some(PendingFfmCommit { token, .. }) =
+                    self.pending_focus_follow_mouse.replace(PendingFfmCommit {
+                        window: window.clone(),
+                        token: focus_token,
+                    })
+                {
+                    self.event_loop.remove(token);
+                }
             }
         }
     }
